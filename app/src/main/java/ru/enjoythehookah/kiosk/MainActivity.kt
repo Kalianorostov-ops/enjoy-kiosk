@@ -398,6 +398,16 @@ class MainActivity : Activity() {
             .put("kiosk", !prefs.paused)
             .toString()
 
+        /** Заряд батареи для админки: {"level":85,"charging":true} */
+        @JavascriptInterface
+        fun battery(): String {
+            val bm = getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
+            return JSONObject()
+                .put("level", bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY))
+                .put("charging", bm.isCharging)
+                .toString()
+        }
+
         @JavascriptInterface
         fun reload() {
             runOnUiThread { web?.reload() }
