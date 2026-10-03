@@ -57,6 +57,7 @@ class MainActivity : Activity() {
     private var offline: TextView? = null
     private val ui = Handler(Looper.getMainLooper())
     private var askedPinning = false
+    private var lastPinAsk = 0L
     private var setupShown = false
 
     // ---------- запуск ----------
@@ -96,7 +97,10 @@ class MainActivity : Activity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) hideSystemBars()
+        if (hasFocus) {
+            hideSystemBars()
+            if (!prefs.paused) enterLock()
+        }
     }
 
     override fun onDestroy() {
@@ -119,9 +123,11 @@ class MainActivity : Activity() {
         if (Kiosk.isLocked(this)) return
         if (Kiosk.isOwner(this)) {
             try { startLockTask() } catch (_: Exception) {}
-        } else if (!askedPinning) {
-            // без режима владельца — обычное закрепление экрана (Android спросит подтверждение)
+        } else if (!askedPinning || System.currentTimeMillis() - lastPinAsk > 20_000) {
+            // без режима владельца — обычное закрепление экрана (Android спросит подтверждение).
+            // Если закрепление сняли — через 20 секунд предложим снова.
             askedPinning = true
+            lastPinAsk = System.currentTimeMillis()
             try { startLockTask() } catch (_: Exception) {}
         }
     }
