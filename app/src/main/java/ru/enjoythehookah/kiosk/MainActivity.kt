@@ -83,6 +83,7 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (intent.getBooleanExtra("wake", false)) goWake()
         handleLink(intent)
     }
 
@@ -385,10 +386,20 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun setBrightness(v: Double) {
             runOnUiThread {
-                val lp = window.attributes
-                lp.screenBrightness = if (v < 0) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE else v.coerceIn(0.02, 1.0).toFloat()
-                window.attributes = lp
+                brightness = if (v < 0) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE else v.coerceIn(0.02, 1.0).toFloat()
+                if (!sleeping) applyBrightness(brightness)
             }
+        }
+
+        /** Ночной режим из админки: погасить экран на seconds секунд, потом включить самому. */
+        @JavascriptInterface
+        fun sleep(seconds: Int) {
+            runOnUiThread { goSleep(seconds) }
+        }
+
+        @JavascriptInterface
+        fun wake() {
+            runOnUiThread { goWake() }
         }
 
         @JavascriptInterface
@@ -515,6 +526,65 @@ class MainActivity : Activity() {
         }
     }
 
+    // ---------- ночной режим: экран гаснет по расписанию из админки и включается сам ----------
+
+    private var sleeping = false
+    private var brightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+    private var nightCover: View? = null
+
+    private fun applyBrightness(v: Float) {
+        val lp = window.attributes
+        lp.screenBrightness = v
+        window.attributes = lp
+    }
+
+    private fun goSleep(seconds: Int) {
+        if (sleeping) { scheduleWake(seconds); return }
+        sleeping = true
+        ui.removeCallbacks(wakeUp)
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        applyBrightness(0.01f)
+        if (nightCover == null) {
+            nightCover = View(this).apply { setBackgroundColor(Color.BLACK) }
+            root.addView(nightCover, FrameLayout.LayoutParams(-1, -1))
+        }
+        scheduleWake(seconds)
+        // режим владельца — гасим экран сразу; иначе он погаснет сам по таймауту экрана Android
+        if (Kiosk.isOwner(this)) {
+            ui.postDelayed({ if (sleeping) try { Kiosk.dpm(this).lockNow() } catch (_: Exception) {} }, 1500)
+        }
+    }
+
+    private fun goWake() {
+        if (!sleeping) return
+        sleeping = false
+        cancelWake()
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        applyBrightness(brightness)
+        nightCover?.let { root.removeView(it) }
+        nightCover = null
+        wakeUp.run()
+        web?.reload()
+    }
+
+    private fun wakePending(): android.app.PendingIntent = android.app.PendingIntent.getBroadcast(
+        this, 1, Intent(this, WakeReceiver::class.java),
+        android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+    )
+
+    private fun scheduleWake(seconds: Int) {
+        if (seconds <= 0) return
+        try {
+            val am = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+            am.setAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + seconds * 1000L, wakePending())
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun cancelWake() {
+        try { (getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager).cancel(wakePending()) } catch (_: Exception) {}
+    }
+
     // ---------- экран погасили кнопкой питания — включаем обратно ----------
 
     private val wakeUp = Runnable {
@@ -533,7 +603,7 @@ class MainActivity : Activity() {
     private val screenWatch = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             when (i.action) {
-                Intent.ACTION_SCREEN_OFF -> if (prefs.wake && kioskActive()) ui.postDelayed(wakeUp, 2_500)
+                Intent.ACTION_SCREEN_OFF -> if (prefs.wake && kioskActive() && !sleeping) ui.postDelayed(wakeUp, 2_500)
                 Intent.ACTION_SCREEN_ON -> ui.removeCallbacks(wakeUp)
             }
         }
