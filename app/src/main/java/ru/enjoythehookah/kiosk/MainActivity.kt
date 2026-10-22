@@ -2,6 +2,7 @@ package ru.enjoythehookah.kiosk
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.ActivityManager
 import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -78,6 +79,8 @@ class MainActivity : Activity() {
         registerScreenWatch()
         registerNetworkWatch()
         render()
+        ui.postDelayed(watchdog, 60_000)
+        ui.postDelayed(updCheck, 120_000)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -180,6 +183,7 @@ class MainActivity : Activity() {
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (ev.actionMasked == MotionEvent.ACTION_DOWN && !setupShown) {
+            lastTouch = System.currentTimeMillis()
             val zone = dp(110)
             if (ev.x < zone && ev.y < zone) {
                 val now = System.currentTimeMillis()
@@ -241,6 +245,34 @@ class MainActivity : Activity() {
             toast(if (prefs.wake) "Экран будет включаться сам" else "Экран больше не будится")
         }
         add("🔑  Сменить PIN") { changePin() }
+        add(if (prefs.autoUpdate) "⬆️  Обновляться само: ВКЛ" else "⬆️  Обновляться само: ВЫКЛ") {
+            prefs.autoUpdate = !prefs.autoUpdate
+            toast(if (prefs.autoUpdate) "Программа будет обновляться сама" else "Обновление только вручную")
+        }
+        add("⬇️  Проверить обновление сейчас") {
+            toast("Смотрю, есть ли новая версия…")
+            Updater.check(this) { v, note ->
+                ui.post {
+                    toast(note)
+                    if (v > 0 && Kiosk.isOwner(this)) {
+                        AlertDialog.Builder(this)
+                            .setTitle("Обновление 1.0." + v)
+                            .setMessage("Скачано. Поставить сейчас? Программа перезапустится, экран стола вернётся сам.")
+                            .setPositiveButton("Поставить") { _, _ -> Updater.install(this) }
+                            .setNegativeButton("Потом ночью", null)
+                            .show()
+                    }
+                }
+            }
+        }
+        if (owner) add("♻️  Перезагрузить планшет") {
+            AlertDialog.Builder(this)
+                .setTitle("Перезагрузить планшет?")
+                .setMessage("Экран стола вернётся сам через минуту.")
+                .setPositiveButton("Перезагрузить") { _, _ -> if (!Kiosk.reboot(this)) toast("Не получилось") }
+                .setNegativeButton("Отмена", null)
+                .show()
+        }
         if (!owner) {
             add("🏠  Выбрать рабочий стол Android") {
                 pause()
@@ -298,7 +330,15 @@ class MainActivity : Activity() {
                 "Стол: " + Prefs.tableNo(prefs.url) + "\n" +
                     "Режим владельца: " + (if (Kiosk.isOwner(this)) "да (полная блокировка)" else "нет (закрепление экрана)") + "\n" +
                     "Киоск: " + (if (prefs.paused) "выключен" else "включён") + "\n" +
-                    "Будить экран: " + (if (prefs.wake) "да" else "нет")
+                    "Будить экран: " + (if (prefs.wake) "да" else "нет") + "\n\n" +
+                    "Планшет: " + Build.MANUFACTURER + " " + Build.MODEL + ", Android " + Build.VERSION.RELEASE + "\n" +
+                    "WebView: " + webViewVersion() + "\n" +
+                    "Wi-Fi: " + wifiLevel() + "%   IP: " + (ipAddress().ifEmpty { "нет" }) + "\n" +
+                    "Включён: " + (android.os.SystemClock.elapsedRealtime() / 3600_000L) + " ч\n" +
+                    "Свободно: память " + freeMemMb() + " МБ, память устройства " + freeDiskMb() + " МБ\n" +
+                    "Пульс страницы: " + (if (!pulseSeen) "нет (старая версия экрана)"
+                        else ((System.currentTimeMillis() - lastAlive) / 1000L).toString() + " с назад") + "\n" +
+                    "Обновление: " + (if (prefs.updNote.isEmpty()) "ещё не проверялось" else prefs.updNote)
             )
             .setPositiveButton("OK", null).show()
     }
@@ -364,20 +404,89 @@ class MainActivity : Activity() {
             setTextColor(Color.parseColor("#F1E9DA"))
             setBackgroundColor(Color.parseColor("#E6161412"))
             gravity = Gravity.CENTER
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            setPadding(dp(16), dp(12), dp(16), dp(12))
             visibility = View.GONE
         }
-        root.addView(offline, FrameLayout.LayoutParams(-1, -1))
+        // полоска снизу: последняя загруженная страница остаётся видна гостю
+        root.addView(offline, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
         if (w.url != prefs.url) w.loadUrl(prefs.url)
         hideSystemBars()
     }
 
     private val retry = Runnable { web?.reload() }
+    private var offlineTries = 0
 
+    /**
+     * Нет связи: показываем полоску снизу (последняя страница остаётся видна) и пробуем снова
+     * с нарастающей паузой 10 с → 30 с → 2 мин, чтобы не греть планшет и не сажать батарею.
+     */
     private fun setOffline(on: Boolean) {
         offline?.visibility = if (on) View.VISIBLE else View.GONE
         ui.removeCallbacks(retry)
-        if (on) ui.postDelayed(retry, 10_000)
+        if (!on) { offlineTries = 0; return }
+        offlineTries++
+        val wait = when {
+            offlineTries <= 2 -> 10_000L
+            offlineTries <= 5 -> 30_000L
+            else -> 120_000L
+        }
+        ui.postDelayed(retry, wait)
+    }
+
+    // ---------- «пульс» страницы: белый или замёрзший экран сам не вылечится ----------
+
+    private var lastAlive = 0L
+    private var pulseSeen = false
+    private var misses = 0
+
+    private val watchdog = object : Runnable {
+        override fun run() {
+            ui.postDelayed(this, 60_000)
+            // пока страница ни разу не прислала пульс (старая версия table.html) — не вмешиваемся
+            if (!pulseSeen || sleeping || !kioskActive()) return
+            if (offline?.visibility == View.VISIBLE) return
+            val quiet = System.currentTimeMillis() - lastAlive
+            if (quiet < 180_000) return
+            misses++
+            lastAlive = System.currentTimeMillis()
+            if (misses >= 2) {
+                misses = 0
+                recreateWeb()
+            } else {
+                web?.reload()
+            }
+        }
+    }
+
+    /** Пересоздать страницу целиком — когда перезагрузка не помогла. */
+    private fun recreateWeb() {
+        val w = web
+        web = null
+        try { root.removeView(w) } catch (_: Exception) {}
+        w?.destroy()
+        render()
+    }
+
+    // ---------- обновление программы ----------
+
+    private var lastTouch = System.currentTimeMillis()
+
+    private val updCheck = object : Runnable {
+        override fun run() {
+            ui.postDelayed(this, 6 * 3600_000L)
+            if (!prefs.autoUpdate || !Kiosk.isOwner(this@MainActivity)) return
+            if (Updater.ready(this@MainActivity)) installIfCalm()
+            else Updater.check(this@MainActivity) { v, _ -> if (v > 0) ui.post { installIfCalm() } }
+        }
+    }
+
+    /** Ставим обновление только в спокойный момент: планшет спит или экрана не трогали 15 минут. */
+    private fun installIfCalm() {
+        if (!Updater.ready(this)) return
+        val calm = sleeping || System.currentTimeMillis() - lastTouch > 15 * 60_000L
+        if (calm) Updater.install(this)
+        else ui.postDelayed({ installIfCalm() }, 5 * 60_000L)
     }
 
     /** Связь страницы с планшетом: window.EnjoyKiosk в JavaScript. */
@@ -402,12 +511,57 @@ class MainActivity : Activity() {
             runOnUiThread { goWake() }
         }
 
+        /** Сведения о планшете для админки (журнал «📟 Экраны столов»). */
         @JavascriptInterface
         fun info(): String = JSONObject()
             .put("app", BuildConfig.VERSION_NAME)
+            .put("code", BuildConfig.VERSION_CODE)
             .put("owner", Kiosk.isOwner(this@MainActivity))
             .put("kiosk", !prefs.paused)
+            .put("model", Build.MANUFACTURER + " " + Build.MODEL)
+            .put("android", Build.VERSION.RELEASE)
+            .put("webview", webViewVersion())
+            .put("wifi", wifiLevel())
+            .put("ip", ipAddress())
+            .put("uptime", android.os.SystemClock.elapsedRealtime() / 1000L)
+            .put("mem", freeMemMb())
+            .put("disk", freeDiskMb())
+            .put("upd", prefs.updVer)
+            .put("updnote", prefs.updNote)
             .toString()
+
+        /** Пульс страницы: пока он приходит, экран стола живой. */
+        @JavascriptInterface
+        fun alive() {
+            lastAlive = System.currentTimeMillis()
+            pulseSeen = true
+            misses = 0
+        }
+
+        /** Короткая вибрация под нажатие кнопки на экране стола. */
+        @JavascriptInterface
+        fun vibrate(ms: Int) {
+            val d = ms.coerceIn(5, 120).toLong()
+            try {
+                if (Build.VERSION.SDK_INT >= 31) {
+                    val vm = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as android.os.VibratorManager
+                    vm.defaultVibrator.vibrate(android.os.VibrationEffect.createOneShot(d, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    @Suppress("DEPRECATION")
+                    val v = getSystemService(Context.VIBRATOR_SERVICE) as android.os.Vibrator
+                    @Suppress("DEPRECATION")
+                    v.vibrate(android.os.VibrationEffect.createOneShot(d, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+                }
+            } catch (_: Exception) {
+            }
+        }
+
+        /** Перезагрузка планшета по команде из админки. */
+        @JavascriptInterface
+        fun reboot(): Boolean {
+            runOnUiThread { toast("Перезагрузка по команде из админки…") }
+            return Kiosk.reboot(this@MainActivity)
+        }
 
         /** Заряд батареи для админки: {"level":85,"charging":true} */
         @JavascriptInterface
@@ -419,11 +573,58 @@ class MainActivity : Activity() {
                 .toString()
         }
 
+        /** Проверить обновление программы прямо сейчас (команда из админки). */
+        @JavascriptInterface
+        fun update() {
+            Updater.check(this@MainActivity) { v, _ -> if (v > 0) ui.post { installIfCalm() } }
+        }
+
         @JavascriptInterface
         fun reload() {
             runOnUiThread { web?.reload() }
         }
     }
+
+    // ---------- сведения о планшете ----------
+
+    private fun webViewVersion(): String = try {
+        if (Build.VERSION.SDK_INT >= 26) WebView.getCurrentWebViewPackage()?.versionName ?: "?" else "?"
+    } catch (e: Throwable) { "?" }
+
+    /** Уровень Wi-Fi в процентах (0 — не Wi-Fi). */
+    private fun wifiLevel(): Int = try {
+        @Suppress("DEPRECATION")
+        val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+        @Suppress("DEPRECATION")
+        val rssi = wm.connectionInfo.rssi
+        if (rssi == 0 || rssi < -127) 0 else ((rssi + 100).coerceIn(0, 60) * 100 / 60)
+    } catch (e: Throwable) { 0 }
+
+    private fun ipAddress(): String = try {
+        var found = ""
+        val ifs = java.net.NetworkInterface.getNetworkInterfaces()
+        while (ifs.hasMoreElements() && found.isEmpty()) {
+            val ni = ifs.nextElement()
+            if (!ni.isUp || ni.isLoopback) continue
+            val addrs = ni.inetAddresses
+            while (addrs.hasMoreElements()) {
+                val a = addrs.nextElement()
+                if (!a.isLoopbackAddress && a is java.net.Inet4Address) { found = a.hostAddress ?: ""; break }
+            }
+        }
+        found
+    } catch (e: Throwable) { "" }
+
+    private fun freeMemMb(): Long = try {
+        val mi = ActivityManager.MemoryInfo()
+        (getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(mi)
+        mi.availMem / 1048576L
+    } catch (e: Throwable) { 0L }
+
+    private fun freeDiskMb(): Long = try {
+        val s = android.os.StatFs(filesDir.absolutePath)
+        s.availableBytes / 1048576L
+    } catch (e: Throwable) { 0L }
 
     // ---------- настройка: ссылка стола и PIN ----------
 
@@ -576,7 +777,11 @@ class MainActivity : Activity() {
         if (seconds <= 0) return
         try {
             val am = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
-            am.setAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + seconds * 1000L, wakePending())
+            val at = System.currentTimeMillis() + seconds * 1000L
+            // точно к минуте: обычный будильник в «глубоком сне» может опоздать на десятки минут
+            val exact = Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()
+            if (exact) am.setExactAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, at, wakePending())
+            else am.setAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP, at, wakePending())
         } catch (_: Exception) {
         }
     }

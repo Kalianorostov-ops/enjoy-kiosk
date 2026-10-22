@@ -31,6 +31,10 @@ object Kiosk {
         UserManager.DISALLOW_ADD_USER,
         UserManager.DISALLOW_MOUNT_PHYSICAL_MEDIA,
         UserManager.DISALLOW_USB_FILE_TRANSFER,
+        // гость не сбросит планшет, не сменит сеть и не сдвинет время (расписание ночи зависит от часов)
+        UserManager.DISALLOW_FACTORY_RESET,
+        UserManager.DISALLOW_CONFIG_WIFI,
+        UserManager.DISALLOW_CONFIG_DATE_TIME,
     )
 
     /** Включить все ограничения. Вызывается после настройки и при каждом запуске. */
@@ -54,6 +58,25 @@ object Kiosk {
             d.addPersistentPreferredActivity(a, f, ComponentName(ctx, MainActivity::class.java))
         }
         restrictions.forEach { r -> safe { d.addUserRestriction(a, r) } }
+        // обновления Android ставятся ночью, с 04:00 до 08:00 — не в смену
+        safe {
+            d.setSystemUpdatePolicy(
+                a,
+                android.app.admin.SystemUpdatePolicy.createWindowedInstallPolicy(4 * 60, 8 * 60)
+            )
+        }
+    }
+
+    /** Перезагрузить планшет (команда из админки). Только в режиме владельца устройства. */
+    fun reboot(ctx: Context): Boolean {
+        if (!isOwner(ctx)) return false
+        return try {
+            dpm(ctx).reboot(admin(ctx))
+            true
+        } catch (e: Throwable) {
+            Log.w("EnjoyKiosk", "reboot: " + e.message)
+            false
+        }
     }
 
     /** Временно снять ограничения (вход в настройки Android по PIN). */
@@ -72,6 +95,7 @@ object Kiosk {
         val d = dpm(ctx)
         val a = admin(ctx)
         relaxOwnerPolicies(ctx)
+        safe { d.setSystemUpdatePolicy(a, null) }
         safe { d.clearPackagePersistentPreferredActivities(a, ctx.packageName) }
         safe { d.setLockTaskPackages(a, emptyArray<String>()) }
         safe { d.setGlobalSetting(a, Settings.Global.STAY_ON_WHILE_PLUGGED_IN, "0") }

@@ -5,6 +5,11 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
     <application
         android:allowBackup="false"
@@ -86,6 +91,15 @@
         <receiver
             android:name=".WakeReceiver"
             android:exported="false" />
+
+        <!-- чем закончилась установка обновления программы -->
+        <receiver
+            android:name=".InstallReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="ru.enjoythehookah.kiosk.INSTALL_RESULT" />
+            </intent-filter>
+        </receiver>
 
         <receiver
             android:name=".BootReceiver"

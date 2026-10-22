@@ -25,6 +25,26 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("paused", false)
         set(v) = sp.edit().putBoolean("paused", v).apply()
 
+    /** Обновлять программу самой, когда выйдет новая версия. */
+    var autoUpdate: Boolean
+        get() = sp.getBoolean("autoupd", true)
+        set(v) = sp.edit().putBoolean("autoupd", v).apply()
+
+    /** Номер скачанного, но ещё не установленного обновления (0 — нет). */
+    var updVer: Int
+        get() = sp.getInt("updver", 0)
+        set(v) = sp.edit().putInt("updver", v).apply()
+
+    /** Когда последний раз проверяли обновление. */
+    var updAt: Long
+        get() = sp.getLong("updat", 0L)
+        set(v) = sp.edit().putLong("updat", v).apply()
+
+    /** Чем закончилась последняя проверка/установка — для меню и админки. */
+    var updNote: String
+        get() = sp.getString("updnote", "") ?: ""
+        set(v) = sp.edit().putString("updnote", v).apply()
+
     companion object {
         const val HOST = "enjoythehookah.ru"
 
