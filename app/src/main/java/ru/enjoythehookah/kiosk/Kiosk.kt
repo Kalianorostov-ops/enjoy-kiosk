@@ -19,6 +19,8 @@ object Kiosk {
 
     fun isOwner(ctx: Context): Boolean = dpm(ctx).isDeviceOwnerApp(ctx.packageName)
 
+    const val OWNER_INFO = "Это устройство принадлежит Enjoy the Hookah. Нашли? Позвоните: 8 961 427-19-99"
+
     /**
      * 📶 1.0.11: Wi-Fi сети из админки: [{"s":"имя сети","p":"пароль"}]. Программа — владелец устройства,
      * поэтому Android разрешает ей добавлять и менять сети. Пароль никуда не выводится; итог — «имя ✓/✗».
@@ -49,6 +51,7 @@ object Kiosk {
                 if (old != null) { c.networkId = old.networkId; id = wm.updateNetwork(c) }
                 if (id < 0) id = wm.addNetwork(c)
             } catch (e: Throwable) { Log.w("EnjoyKiosk", "wifi: " + e.message) }
+            p.addHome(ssid)   // 🚨 1.0.15: сеть из админки — сеть заведения
             if (id >= 0) { try { wm.enableNetwork(id, false) } catch (_: Throwable) {}; res.add("$ssid ✓") } else res.add("$ssid ✗")
         }
         val r = res.joinToString(", ").ifEmpty { "нет сетей" }
@@ -103,7 +106,13 @@ object Kiosk {
             d.addPersistentPreferredActivity(a, f, ComponentName(ctx, MainActivity::class.java))
         }
         restrictions.forEach { r -> safe { d.addUserRestriction(a, r) } }
-        grantLocation(ctx, Prefs(ctx).lost)
+        // 🚨 1.0.15: геолокация включена всегда — без неё Android не скажет имя Wi-Fi сети (нужно для «Пропал» без интернета)
+        grantLocation(ctx, true)
+        // 🚨 1.0.15: кому принадлежит планшет — записано в сам Android (экран блокировки, «Об устройстве»), работает без интернета
+        if (Build.VERSION.SDK_INT >= 24) {
+            safe { d.setDeviceOwnerLockScreenInfo(a, OWNER_INFO) }
+            safe { d.setOrganizationName(a, "Enjoy the Hookah") }
+        }
         // обновления Android ставятся ночью, с 04:00 до 08:00 — не в смену
         safe {
             d.setSystemUpdatePolicy(

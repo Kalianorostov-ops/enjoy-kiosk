@@ -81,7 +81,8 @@ class MainActivity : Activity() {
         render()
         ui.postDelayed(watchdog, 60_000)
         ui.postDelayed(updCheck, 120_000)
-        if (prefs.lost) ui.post(locLoop)
+        if (lostOn()) ui.post(locLoop)
+        ui.postDelayed(awayLoop, 30_000)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -244,6 +245,13 @@ class MainActivity : Activity() {
             try { startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {}
         }
         if (prefs.lost) add("✅  Снять режим «Планшет пропал»") { setLost(false, null); toast("Режим «Пропал» снят. Снимите его и в админке, иначе включится снова") }
+        // 🚨 1.0.15: «Пропал» включился сам (нет Wi-Fi заведения) — снять и запомнить текущую сеть как сеть заведения
+        if (prefs.lostAuto) add("✅  Снять «Пропал» (включился сам — нет Wi-Fi заведения)") {
+            Kiosk.wifiSsid(this).let { if (it.isNotEmpty()) prefs.addHome(it) }
+            prefs.awaySince = 0L
+            setAutoLost(false)
+            toast("Снято. Если это новая сеть заведения — она запомнена")
+        }
         add("🔋  Настройки батареи (защита 80 %)") { visitSettings("battery") }
         add(if (prefs.wake) "💡  Будить погасший экран: ВКЛ" else "💡  Будить погасший экран: ВЫКЛ") {
             prefs.wake = !prefs.wake
@@ -310,7 +318,7 @@ class MainActivity : Activity() {
      * Режим киоска не выключаем насовсем: «Домой» или 3 минуты — и снова экран стола.
      */
     private fun visitSettings(what: String) {
-        if (prefs.lost) return
+        if (lostOn()) return
         // 🔋 1.0.10: если Android ограничивает программу по батарее — сначала системное окно «Разрешить работать в фоне?»
         val boNeed = what == "battery" && try { !(getSystemService(Context.POWER_SERVICE) as android.os.PowerManager).isIgnoringBatteryOptimizations(packageName) } catch (_: Exception) { false }
         val tries = if (what == "battery") (if (boNeed) listOf(
@@ -350,23 +358,91 @@ class MainActivity : Activity() {
 
     private var lostCover: View? = null
 
+    /** «Пропал» включён: из админки или сам (нет Wi-Fi заведения). */
+    private fun lostOn() = prefs.lost || prefs.lostAuto
+
     private fun setLost(on: Boolean, json: String?) {
         prefs.lost = on
         if (on) {
             if (json != null) prefs.lostMsg = json
-            Kiosk.grantLocation(this, true)
-            if (sleeping) { sleeping = false; nightCover?.let { root.removeView(it) }; nightCover = null; cancelWake() }
-            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            showLost()
-            ui.removeCallbacks(locLoop)
-            ui.post(locLoop)
-            if (!prefs.paused) { Kiosk.applyOwnerPolicies(this); enterLock() }
-        } else {
-            ui.removeCallbacks(locLoop)
-            lostCover?.let { root.removeView(it) }
-            lostCover = null
-            applyBrightness(brightness)
+            lostUiOn()
+        } else if (!prefs.lostAuto) lostUiOff()
+    }
+
+    private fun setAutoLost(on: Boolean) {
+        prefs.lostAuto = on
+        if (on) lostUiOn() else if (!prefs.lost) lostUiOff()
+    }
+
+    private fun lostUiOn() {
+        Kiosk.grantLocation(this, true)
+        if (sleeping) { sleeping = false; nightCover?.let { root.removeView(it) }; nightCover = null; cancelWake() }
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        showLost()
+        ui.removeCallbacks(locLoop)
+        ui.post(locLoop)
+        if (!prefs.paused) { Kiosk.applyOwnerPolicies(this); enterLock() }
+        // 🚨 1.0.15: экран мог быть погашен на ночь — включаем, иначе картинку никто не увидит
+        screenOn()
+    }
+
+    private fun lostUiOff() {
+        ui.removeCallbacks(locLoop)
+        lostCover?.let { root.removeView(it) }
+        lostCover = null
+        applyBrightness(brightness)
+    }
+
+    /** Включить погасший экран (ночной режим или кнопка питания). */
+    private fun screenOn() {
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (!pm.isInteractive) wakeUp.run()
+        } catch (_: Exception) {}
+    }
+
+    // ---------- 🚨 1.0.15: «Пропал» без интернета — планшет унесли из заведения ----------
+
+    private val AWAY_MS = 15 * 60_000L
+
+    private fun wifiConnected(): Boolean = try {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        cm.getNetworkCapabilities(cm.activeNetwork)?.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) == true
+    } catch (_: Exception) { false }
+
+    /**
+     * Раз в минуту: видит ли планшет Wi-Fi заведения. Нет сети заведения 15 минут подряд и не на зарядке —
+     * экран «Пропал» включается сам (без интернета и без админки). Вернулся в сеть заведения — снимается сам.
+     * Сети заведения программа запоминает первые сутки после обновления; ещё — из админки «📶 Wi-Fi».
+     */
+    private val awayLoop = object : Runnable {
+        override fun run() {
+            ui.removeCallbacks(this)
+            try { awayCheck() } catch (_: Exception) {}
+            ui.postDelayed(this, 60_000L)
         }
+    }
+
+    private fun awayCheck() {
+        if (!Prefs.isTableUrl(prefs.url) || prefs.paused) return
+        // ночью экран погашен — Android может сам отключить Wi-Fi; ночью не судим, чтобы не включить «Пропал» зря
+        if (sleeping && !prefs.lostAuto) { prefs.awaySince = 0L; return }
+        val now = System.currentTimeMillis()
+        val ssid = Kiosk.wifiSsid(this)
+        if (prefs.homeLearnUntil == 0L) prefs.homeLearnUntil = now + 24 * 3600_000L
+        if (ssid.isNotEmpty() && now < prefs.homeLearnUntil && !lostOn()) prefs.addHome(ssid)
+        val home = prefs.homeSet()
+        val atHome = ssid.isNotEmpty() && ssid in home
+        val unknown = ssid.isEmpty() && wifiConnected()   // подключён, но имя сети не прочитать — не судим
+        if (home.isEmpty() || atHome || unknown) {
+            prefs.awaySince = 0L
+            if (prefs.lostAuto) setAutoLost(false)
+            return
+        }
+        if (prefs.lostAuto) return
+        if (plugged()) { prefs.awaySince = 0L; return }
+        if (prefs.awaySince == 0L) { prefs.awaySince = now; return }
+        if (now - prefs.awaySince >= AWAY_MS) setAutoLost(true)
     }
 
     /** Экран поверх всего: кому принадлежит, видеонаблюдение, телефон. Касания до страницы не доходят. */
@@ -418,10 +494,11 @@ class MainActivity : Activity() {
     private val locLoop = object : Runnable {
         override fun run() {
             ui.removeCallbacks(this)
-            if (!prefs.lost) return
+            if (!lostOn()) return
             requestLocation()
-            // 🚨 1.0.9: экран «Пропал» всегда сверху и на полной яркости
+            // 🚨 1.0.9: экран «Пропал» всегда сверху и на полной яркости; 1.0.15: и включён
             if (lostCover?.parent == null) showLost() else { lostCover?.bringToFront(); applyBrightness(1f) }
+            screenOn()
             ui.postDelayed(this, 180_000L)
         }
     }
@@ -602,7 +679,7 @@ class MainActivity : Activity() {
         if (w.url != prefs.url) w.loadUrl(prefs.url)
         hideSystemBars()
         lostCover = null
-        if (prefs.lost) showLost()
+        if (lostOn()) showLost()
     }
 
     private val retry = Runnable { web?.reload() }
@@ -688,7 +765,7 @@ class MainActivity : Activity() {
         fun setBrightness(v: Double) {
             runOnUiThread {
                 brightness = if (v < 0) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE else v.coerceIn(0.02, 1.0).toFloat()
-                if (!sleeping && !prefs.lost) applyBrightness(brightness)   // 🚨 1.0.9: в режиме «Пропал» экран всегда на 100 %
+                if (!sleeping && !lostOn()) applyBrightness(brightness)   // 🚨 1.0.9: в режиме «Пропал» экран всегда на 100 %
             }
         }
 
@@ -722,6 +799,8 @@ class MainActivity : Activity() {
             .put("updnote", prefs.updNote)
             .put("set", Kiosk.settingsReport(this@MainActivity))
             .put("lost", prefs.lost)
+            .put("lostAuto", prefs.lostAuto)
+            .put("home", prefs.homeSet().size)
             .put("frp", Kiosk.frpState(this@MainActivity))
             .put("ssid", Kiosk.wifiSsid(this@MainActivity))
             .put("wfres", prefs.wifiRes)
@@ -1036,7 +1115,7 @@ class MainActivity : Activity() {
     }
 
     private fun goSleep(seconds: Int) {
-        if (prefs.lost) return
+        if (lostOn()) return
         if (sleeping) { scheduleWake(seconds); return }
         sleeping = true
         ui.removeCallbacks(wakeUp)
@@ -1126,7 +1205,7 @@ class MainActivity : Activity() {
         override fun onAvailable(network: Network) {
             ui.post {
                 if (offline?.visibility == View.VISIBLE) web?.reload()
-                if (prefs.lost) requestLocation()
+                if (lostOn()) requestLocation()
             }
         }
     }

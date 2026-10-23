@@ -63,6 +63,38 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("lost", false)
         set(v) = sp.edit().putBoolean("lost", v).apply()
 
+    /**
+     * 🚨 1.0.15: «Пропал» включился сам — планшет долго не видит Wi-Fi заведения и не на зарядке.
+     * Держится и после перезагрузки; снимается сам, когда планшет снова в сети заведения.
+     */
+    var lostAuto: Boolean
+        get() = sp.getBoolean("lostauto", false)
+        set(v) = sp.edit().putBoolean("lostauto", v).apply()
+
+    /** С какого момента планшет вне сети заведения (0 — в сети или на зарядке). */
+    var awaySince: Long
+        get() = sp.getLong("awaysince", 0L)
+        set(v) = sp.edit().putLong("awaysince", v).apply()
+
+    /** Wi-Fi сети заведения (по одной в строке): запоминаются первые сутки после обновления и из админки «📶 Wi-Fi». */
+    var homeSsids: String
+        get() = sp.getString("homessids", "") ?: ""
+        set(v) = sp.edit().putString("homessids", v).apply()
+
+    /** До какого времени программа сама запоминает сеть заведения (первые сутки). */
+    var homeLearnUntil: Long
+        get() = sp.getLong("homelearn", 0L)
+        set(v) = sp.edit().putLong("homelearn", v).apply()
+
+    fun homeSet(): Set<String> = homeSsids.split('\n').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+
+    fun addHome(ssid: String) {
+        val s = ssid.trim()
+        if (s.isEmpty()) return
+        val h = homeSet()
+        if (s !in h && h.size < 10) homeSsids = (h + s).joinToString("\n")
+    }
+
     /** Текст экрана «Пропал»: {"title","text","phone"} */
     var lostMsg: String
         get() = sp.getString("lostmsg", "") ?: ""
