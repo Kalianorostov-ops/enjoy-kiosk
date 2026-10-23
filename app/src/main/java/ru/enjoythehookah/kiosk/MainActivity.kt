@@ -828,6 +828,21 @@ class MainActivity : Activity() {
             runOnUiThread { takeShot() }
         }
 
+        /**
+         * ⬆️ 1.0.13: «Обновить сейчас» из админки — даже если за столом гости.
+         * Есть новая программа — ставим сразу (экран вернётся сам), нет — просто перезагружаем страницу стола.
+         */
+        @JavascriptInterface
+        fun updateNow() {
+            runOnUiThread { toast("Обновление экрана стола…") }
+            if (Updater.ready(this@MainActivity)) { ui.post { Updater.install(this@MainActivity) }; return }
+            Updater.check(this@MainActivity) { v, _ ->
+                ui.post { if (v > 0 && Updater.ready(this@MainActivity)) Updater.install(this@MainActivity) else web?.reload() }
+            }
+            // если проверка уже шла — поставим, как только скачается
+            ui.postDelayed({ if (Updater.ready(this@MainActivity)) Updater.install(this@MainActivity) }, 90_000L)
+        }
+
         /** 📶 1.0.11: Wi-Fi сети из админки: [{"s":"имя","p":"пароль"}]. Возвращает итог «имя ✓/✗». */
         @JavascriptInterface
         fun setWifi(json: String): String = Kiosk.setWifi(this@MainActivity, json)
