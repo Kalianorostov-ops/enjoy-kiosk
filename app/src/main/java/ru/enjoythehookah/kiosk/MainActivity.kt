@@ -92,8 +92,18 @@ class MainActivity : Activity() {
         handleLink(intent)
     }
 
+    // 🔎 1.0.17: отчёт экрана — на переднем ли плане окно программы
+    private var resumedNow = false
+    private var shotRes = "не делали"
+
+    override fun onPause() {
+        resumedNow = false
+        super.onPause()
+    }
+
     override fun onResume() {
         super.onResume()
+        resumedNow = true
         hideSystemBars()
         ui.removeCallbacks(visitBack)
         if (!prefs.paused) {
@@ -901,6 +911,16 @@ class MainActivity : Activity() {
             runOnUiThread { web?.reload() }
         }
 
+        /** 🔎 1.0.17: отчёт экрана для админки. */
+        @JavascriptInterface
+        fun dbg(): String {
+            var r = "{}"
+            val l = java.util.concurrent.CountDownLatch(1)
+            runOnUiThread { try { r = screenReport() } catch (_: Throwable) {}; l.countDown() }
+            try { l.await(2, java.util.concurrent.TimeUnit.SECONDS) } catch (_: Throwable) {}
+            return r
+        }
+
         /** 👁 1.0.11: снимок экрана стола для админки — ответ придёт в window.ethShotDone(base64 JPEG). */
         @JavascriptInterface
         fun shot() {
@@ -933,15 +953,60 @@ class MainActivity : Activity() {
         val v = window.decorView
         val w = v.width
         val h = v.height
-        if (w <= 0 || h <= 0) return
+        if (w <= 0 || h <= 0) { shotRes = "окно 0×0"; return }
         val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
         try {
             android.view.PixelCopy.request(window, bmp, { res ->
-                if (res == android.view.PixelCopy.SUCCESS) Thread { sendShot(bmp) }.start() else bmp.recycle()
+                if (res == android.view.PixelCopy.SUCCESS) { shotRes = "экран ок"; Thread { sendShot(bmp) }.start() }
+                else { shotRes = "экран: ошибка $res, снимок программы"; bmp.recycle(); drawShot() }
             }, ui)
-        } catch (_: Throwable) {
+        } catch (e: Throwable) {
+            shotRes = "экран: " + (e.message ?: e.javaClass.simpleName) + ", снимок программы"
             bmp.recycle()
+            drawShot()
         }
+    }
+
+    /** 🔎 1.0.17: если Android не дал снимок экрана — рисуем то, что программа сама держит в окне. */
+    private fun drawShot() {
+        try {
+            val w = root.width
+            val h = root.height
+            if (w <= 0 || h <= 0) return
+            val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+            root.draw(android.graphics.Canvas(bmp))
+            Thread { sendShot(bmp) }.start()
+        } catch (_: Throwable) {}
+    }
+
+    /** 🔎 1.0.17: что сейчас на экране — для админки. */
+    private fun screenReport(): String {
+        val o = JSONObject()
+        fun put(k: String, f: () -> Any?) { try { o.put(k, f() ?: JSONObject.NULL) } catch (e: Throwable) { try { o.put(k, "ошибка: " + e.javaClass.simpleName) } catch (_: Throwable) {} } }
+        put("app") { BuildConfig.VERSION_NAME }
+        put("interactive") { (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive }
+        put("display") { (getSystemService(Context.DISPLAY_SERVICE) as android.hardware.display.DisplayManager).getDisplay(0)?.state }
+        put("resumed") { resumedNow }
+        put("focus") { hasWindowFocus() }
+        put("keyguard") { (getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager).isKeyguardLocked }
+        put("lockTask") { (getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).lockTaskModeState }
+        put("top") { (getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).appTasks.firstOrNull()?.taskInfo?.topActivity?.className }
+        put("tasks") { (getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).appTasks.size }
+        put("lost") { prefs.lost }
+        put("lostAuto") { prefs.lostAuto }
+        put("sleeping") { sleeping }
+        put("cover") { lostCover?.let { c -> "в окне=" + (c.parent != null) + " виден=" + c.isShown + " " + c.width + "×" + c.height + " альфа=" + c.alpha } ?: "нет" }
+        put("night") { nightCover?.let { "есть" } ?: "нет" }
+        put("root") { (0 until root.childCount).joinToString(", ") { i -> val c = root.getChildAt(i); c.javaClass.simpleName + (if (c.visibility == View.VISIBLE) "" else "(скрыт)") + " " + c.width + "×" + c.height } }
+        put("winBright") { window.attributes.screenBrightness }
+        put("sysBright") { Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS) }
+        put("autoBright") { Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS_MODE) }
+        put("decor") { window.decorView.let { it.width.toString() + "×" + it.height + " виден=" + it.isShown + " альфа=" + it.alpha } }
+        put("winFlags") { Integer.toHexString(window.attributes.flags) }
+        put("shot") { shotRes }
+        put("paused") { prefs.paused }
+        put("owner") { Kiosk.isOwner(this) }
+        return o.toString()
     }
 
     private fun sendShot(bmp: android.graphics.Bitmap) {
