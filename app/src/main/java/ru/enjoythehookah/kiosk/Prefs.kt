@@ -58,6 +58,26 @@ class Prefs(ctx: Context) {
         get() = sp.getString("setupnote", "") ?: ""
         set(v) = sp.edit().putString("setupnote", v).apply()
 
+    /** 🚨 1.0.8: режим «Планшет пропал» — держится и после перезагрузки, даже без интернета. */
+    var lost: Boolean
+        get() = sp.getBoolean("lost", false)
+        set(v) = sp.edit().putBoolean("lost", v).apply()
+
+    /** Текст экрана «Пропал»: {"title","text","phone"} */
+    var lostMsg: String
+        get() = sp.getString("lostmsg", "") ?: ""
+        set(v) = sp.edit().putString("lostmsg", v).apply()
+
+    /** Последнее известное место: {"lat","lon","acc","at","p"} */
+    var lastLoc: String
+        get() = sp.getString("lastloc", "") ?: ""
+        set(v) = sp.edit().putString("lastloc", v).apply()
+
+    /** Google-аккаунт для защиты от сброса (числовой ID), который уже применили. */
+    var frpId: String
+        get() = sp.getString("frpid", "") ?: ""
+        set(v) = sp.edit().putString("frpid", v).apply()
+
     companion object {
         const val HOST = "enjoythehookah.ru"
 

@@ -58,6 +58,7 @@ object Kiosk {
             d.addPersistentPreferredActivity(a, f, ComponentName(ctx, MainActivity::class.java))
         }
         restrictions.forEach { r -> safe { d.addUserRestriction(a, r) } }
+        grantLocation(ctx, Prefs(ctx).lost)
         // обновления Android ставятся ночью, с 04:00 до 08:00 — не в смену
         safe {
             d.setSystemUpdatePolicy(
@@ -150,6 +151,51 @@ object Kiosk {
             o.put("fx", p.setupNote.take(100))
         }
         return o
+    }
+
+    // ---------- 🚨 1.0.8: кража ----------
+
+    /** Выдать себе разрешение на местоположение (владелец устройства может сам). on — ещё и включить геолокацию. */
+    fun grantLocation(ctx: Context, on: Boolean) {
+        if (!isOwner(ctx)) return
+        val d = dpm(ctx)
+        val a = admin(ctx)
+        for (perm in arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION, android.Manifest.permission.ACCESS_COARSE_LOCATION)) safe {
+            d.setPermissionGrantState(a, ctx.packageName, perm, DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED)
+        }
+        if (on && Build.VERSION.SDK_INT >= 30) safe { d.setLocationEnabled(a, true) }
+    }
+
+    /**
+     * Защита от сброса: после сброса кнопками (Recovery) планшет попросит войти в этот Google-аккаунт.
+     * id — числовой ID аккаунта Google; пустой — снять защиту. Возвращает frpState.
+     */
+    fun setFrp(ctx: Context, id: String): Int {
+        if (!isOwner(ctx) || Build.VERSION.SDK_INT < 30) return -1
+        val d = dpm(ctx)
+        val a = admin(ctx)
+        try {
+            if (id.isBlank()) d.setFactoryResetProtectionPolicy(a, null)
+            else d.setFactoryResetProtectionPolicy(a, android.app.admin.FactoryResetProtectionPolicy.Builder()
+                .setFactoryResetProtectionAccounts(listOf(id))
+                .setFactoryResetProtectionEnabled(true)
+                .build())
+            Prefs(ctx).frpId = id
+        } catch (e: UnsupportedOperationException) {
+            return -1
+        } catch (e: Throwable) {
+            Log.w("EnjoyKiosk", "frp: " + e.message)
+        }
+        return frpState(ctx)
+    }
+
+    /** 1 — защита от сброса включена, 0 — нет, -1 — планшет не поддерживает. */
+    fun frpState(ctx: Context): Int {
+        if (!isOwner(ctx) || Build.VERSION.SDK_INT < 30) return -1
+        return try {
+            val p = dpm(ctx).getFactoryResetProtectionPolicy(admin(ctx))
+            if (p != null && p.isFactoryResetProtectionEnabled && p.factoryResetProtectionAccounts.isNotEmpty()) 1 else 0
+        } catch (e: UnsupportedOperationException) { -1 } catch (e: Throwable) { 0 }
     }
 
     /** Перезагрузить планшет (команда из админки). Только в режиме владельца устройства. */

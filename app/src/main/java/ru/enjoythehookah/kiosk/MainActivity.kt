@@ -81,6 +81,7 @@ class MainActivity : Activity() {
         render()
         ui.postDelayed(watchdog, 60_000)
         ui.postDelayed(updCheck, 120_000)
+        if (prefs.lost) ui.post(locLoop)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -242,6 +243,7 @@ class MainActivity : Activity() {
             pause()
             try { startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {}
         }
+        if (prefs.lost) add("✅  Снять режим «Планшет пропал»") { setLost(false, null); toast("Режим «Пропал» снят. Снимите его и в админке, иначе включится снова") }
         add("🔋  Настройки батареи (защита 80 %)") { visitSettings("battery") }
         add(if (prefs.wake) "💡  Будить погасший экран: ВКЛ" else "💡  Будить погасший экран: ВЫКЛ") {
             prefs.wake = !prefs.wake
@@ -308,6 +310,7 @@ class MainActivity : Activity() {
      * Режим киоска не выключаем насовсем: «Домой» или 3 минуты — и снова экран стола.
      */
     private fun visitSettings(what: String) {
+        if (prefs.lost) return
         val tries = if (what == "battery") listOf(
             Intent(Intent.ACTION_POWER_USAGE_SUMMARY),
             Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS),
@@ -337,6 +340,136 @@ class MainActivity : Activity() {
         ui.removeCallbacks(visitBack)
         ui.postDelayed(visitBack, 180_000L)
     }
+
+    // ---------- 🚨 1.0.8: «Планшет пропал» ----------
+
+    private var lostCover: View? = null
+
+    private fun setLost(on: Boolean, json: String?) {
+        prefs.lost = on
+        if (on) {
+            if (json != null) prefs.lostMsg = json
+            Kiosk.grantLocation(this, true)
+            if (sleeping) { sleeping = false; nightCover?.let { root.removeView(it) }; nightCover = null; cancelWake() }
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            showLost()
+            ui.removeCallbacks(locLoop)
+            ui.post(locLoop)
+            if (!prefs.paused) { Kiosk.applyOwnerPolicies(this); enterLock() }
+        } else {
+            ui.removeCallbacks(locLoop)
+            lostCover?.let { root.removeView(it) }
+            lostCover = null
+            applyBrightness(brightness)
+        }
+    }
+
+    /** Экран поверх всего: кому принадлежит, видеонаблюдение, телефон. Касания до страницы не доходят. */
+    private fun showLost() {
+        lostCover?.let { root.removeView(it) }
+        var title = "Это устройство принадлежит Enjoy the Hookah"
+        var text = "Устройство заблокировано и отслеживается. В зале ведётся видеонаблюдение.\nВ ваших интересах вернуть его — позвоните:"
+        var phone = "8 961 427-19-99"
+        try {
+            val j = JSONObject(prefs.lostMsg)
+            title = j.optString("title", title).ifBlank { title }
+            text = j.optString("text", text).ifBlank { text }
+            phone = j.optString("phone", phone).ifBlank { phone }
+        } catch (_: Exception) {}
+        val gold = Color.parseColor("#C79A4B")
+        val ink = Color.parseColor("#F1E9DA")
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setPadding(dp(48), dp(32), dp(48), dp(32))
+        }
+        fun tv(t: String, size: Float, color: Int, bold: Boolean) = TextView(this).apply {
+            text = t
+            setTextColor(color)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
+            gravity = Gravity.CENTER
+            if (bold) typeface = Typeface.DEFAULT_BOLD
+            setLineSpacing(0f, 1.2f)
+        }
+        col.addView(tv("⚠", 64f, gold, false))
+        col.addView(tv(title, 34f, gold, true), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+        col.addView(tv(text, 24f, ink, false), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(24) })
+        col.addView(tv(phone, 52f, ink, true), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(20) })
+        col.addView(tv("Спасибо!", 22f, gold, false), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(20) })
+        val cover = FrameLayout(this).apply {
+            setBackgroundColor(Color.parseColor("#161412"))
+            isClickable = true
+            isFocusable = true
+            addView(col, FrameLayout.LayoutParams(-1, -1))
+        }
+        root.addView(cover, FrameLayout.LayoutParams(-1, -1))
+        lostCover = cover
+        applyBrightness(1f)
+        hideSystemBars()
+    }
+
+    /** Пока «пропал» — место раз в 3 минуты (если есть интернет, админка увидит его через страницу). */
+    private val locLoop = object : Runnable {
+        override fun run() {
+            ui.removeCallbacks(this)
+            if (!prefs.lost) return
+            requestLocation()
+            ui.postDelayed(this, 180_000L)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun requestLocation() {
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            Kiosk.grantLocation(this, true)
+            if (checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        }
+        val lm = getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+        val provs = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= 31) provs.add(android.location.LocationManager.FUSED_PROVIDER)
+        provs.add(android.location.LocationManager.NETWORK_PROVIDER)
+        provs.add(android.location.LocationManager.GPS_PROVIDER)
+        for (p in provs) {
+            val on = try { lm.isProviderEnabled(p) } catch (_: Exception) { false }
+            if (!on) continue
+            try { lm.getLastKnownLocation(p)?.let { saveLoc(it, p) } } catch (_: Exception) {}
+            try {
+                if (Build.VERSION.SDK_INT >= 30) {
+                    lm.getCurrentLocation(p, null, mainExecutor) { l -> if (l != null) saveLoc(l, p) }
+                } else {
+                    @Suppress("DEPRECATION")
+                    lm.requestSingleUpdate(p, object : android.location.LocationListener {
+                        override fun onLocationChanged(l: android.location.Location) { saveLoc(l, p) }
+                        @Deprecated("Deprecated in Java")
+                        override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+                        override fun onProviderEnabled(provider: String) {}
+                        override fun onProviderDisabled(provider: String) {}
+                    }, Looper.getMainLooper())
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    /** Берём самое свежее место; при равном времени (±1 мин) — более точное. */
+    private fun saveLoc(l: android.location.Location, p: String) {
+        try {
+            val old = if (prefs.lastLoc.isEmpty()) null else JSONObject(prefs.lastLoc)
+            val oldAt = old?.optLong("at") ?: 0L
+            val oldAcc = old?.optDouble("acc") ?: 1e9
+            val newer = l.time > oldAt + 60_000L
+            val sameButBetter = l.time >= oldAt - 60_000L && l.accuracy < oldAcc
+            if (old != null && !newer && !sameButBetter) return
+            prefs.lastLoc = JSONObject()
+                .put("lat", l.latitude).put("lon", l.longitude)
+                .put("acc", l.accuracy.toDouble()).put("at", l.time).put("p", p)
+                .toString()
+        } catch (_: Exception) {}
+    }
+
+    private fun plugged(): Boolean = try {
+        val i = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        (i?.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) ?: 0) != 0
+    } catch (_: Exception) { false }
 
     private fun pause() {
         prefs.paused = true
@@ -460,6 +593,8 @@ class MainActivity : Activity() {
         root.addView(offline, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM))
         if (w.url != prefs.url) w.loadUrl(prefs.url)
         hideSystemBars()
+        lostCover = null
+        if (prefs.lost) showLost()
     }
 
     private val retry = Runnable { web?.reload() }
@@ -578,6 +713,8 @@ class MainActivity : Activity() {
             .put("upd", prefs.updVer)
             .put("updnote", prefs.updNote)
             .put("set", Kiosk.settingsReport(this@MainActivity))
+            .put("lost", prefs.lost)
+            .put("frp", Kiosk.frpState(this@MainActivity))
             .toString()
 
         /** Пульс страницы: пока он приходит, экран стола живой. */
@@ -620,6 +757,7 @@ class MainActivity : Activity() {
             return JSONObject()
                 .put("level", bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY))
                 .put("charging", bm.isCharging)
+                .put("plugged", plugged())
                 .toString()
         }
 
@@ -630,6 +768,30 @@ class MainActivity : Activity() {
         }
 
         /** ⚙️ 1.0.7: «Настроить планшет» из админки. Возвращает, что поменяли. */
+        /** 🚨 1.0.8: «Планшет пропал» из админки: {"title","text","phone"} */
+        @JavascriptInterface
+        fun lost(json: String) {
+            runOnUiThread { if (!prefs.lost || prefs.lostMsg != json) setLost(true, json) }
+        }
+
+        /** Нашёлся — снять экран «Пропал». */
+        @JavascriptInterface
+        fun found() {
+            runOnUiThread { if (prefs.lost) setLost(false, null) }
+        }
+
+        /** Последнее известное место (JSON) — страница отправляет его в админку. */
+        @JavascriptInterface
+        fun location(): String = prefs.lastLoc
+
+        /** Защита от сброса по Google-аккаунту (числовой ID из админки). Возвращает 1/0/-1. */
+        @JavascriptInterface
+        fun setFrp(id: String): Int {
+            val v = id.trim().filter { it.isDigit() }.take(30)
+            if (v == prefs.frpId && (v.isEmpty() || Kiosk.frpState(this@MainActivity) == 1)) return Kiosk.frpState(this@MainActivity)
+            return Kiosk.setFrp(this@MainActivity, v)
+        }
+
         @JavascriptInterface
         fun setup(): String = Kiosk.applySetup(this@MainActivity)
 
@@ -806,6 +968,7 @@ class MainActivity : Activity() {
     }
 
     private fun goSleep(seconds: Int) {
+        if (prefs.lost) return
         if (sleeping) { scheduleWake(seconds); return }
         sleeping = true
         ui.removeCallbacks(wakeUp)
@@ -893,7 +1056,10 @@ class MainActivity : Activity() {
 
     private val netWatch = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            ui.post { if (offline?.visibility == View.VISIBLE) web?.reload() }
+            ui.post {
+                if (offline?.visibility == View.VISIBLE) web?.reload()
+                if (prefs.lost) requestLocation()
+            }
         }
     }
 
