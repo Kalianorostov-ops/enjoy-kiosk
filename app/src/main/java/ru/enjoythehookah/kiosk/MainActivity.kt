@@ -403,6 +403,7 @@ class MainActivity : Activity() {
             addView(col, FrameLayout.LayoutParams(-1, -1))
         }
         root.addView(cover, FrameLayout.LayoutParams(-1, -1))
+        cover.bringToFront()
         lostCover = cover
         applyBrightness(1f)
         hideSystemBars()
@@ -414,6 +415,8 @@ class MainActivity : Activity() {
             ui.removeCallbacks(this)
             if (!prefs.lost) return
             requestLocation()
+            // 🚨 1.0.9: экран «Пропал» всегда сверху и на полной яркости
+            if (lostCover?.parent == null) showLost() else { lostCover?.bringToFront(); applyBrightness(1f) }
             ui.postDelayed(this, 180_000L)
         }
     }
@@ -680,7 +683,7 @@ class MainActivity : Activity() {
         fun setBrightness(v: Double) {
             runOnUiThread {
                 brightness = if (v < 0) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE else v.coerceIn(0.02, 1.0).toFloat()
-                if (!sleeping) applyBrightness(brightness)
+                if (!sleeping && !prefs.lost) applyBrightness(brightness)   // 🚨 1.0.9: в режиме «Пропал» экран всегда на 100 %
             }
         }
 
