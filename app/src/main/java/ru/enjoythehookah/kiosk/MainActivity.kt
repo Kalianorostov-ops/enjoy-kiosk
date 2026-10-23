@@ -93,8 +93,10 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         hideSystemBars()
+        ui.removeCallbacks(visitBack)
         if (!prefs.paused) {
             Kiosk.applyOwnerPolicies(this)
+            if (prefs.setupAuto && System.currentTimeMillis() - prefs.setupAt > 3600_000L) Kiosk.applySetup(this)
             enterLock()
         }
     }
@@ -240,6 +242,7 @@ class MainActivity : Activity() {
             pause()
             try { startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) {}
         }
+        add("🔋  Настройки батареи (защита 80 %)") { visitSettings("battery") }
         add(if (prefs.wake) "💡  Будить погасший экран: ВКЛ" else "💡  Будить погасший экран: ВЫКЛ") {
             prefs.wake = !prefs.wake
             toast(if (prefs.wake) "Экран будет включаться сам" else "Экран больше не будится")
@@ -288,6 +291,51 @@ class MainActivity : Activity() {
             .setItems(labels.toTypedArray()) { _, i -> actions[i]() }
             .setNegativeButton("Закрыть", null)
             .show()
+    }
+
+    // ---------- 🔋 1.0.7: ненадолго открыть экран настроек Android ----------
+
+    /** Вернуть экран стола, если сотрудник ушёл из настроек и забыл нажать «Домой». */
+    private val visitBack = Runnable {
+        try {
+            startActivity(Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Открыть экран настроек на 3 минуты: батарея (защита 80 %) или настройки программы.
+     * Режим киоска не выключаем насовсем: «Домой» или 3 минуты — и снова экран стола.
+     */
+    private fun visitSettings(what: String) {
+        val tries = if (what == "battery") listOf(
+            Intent(Intent.ACTION_POWER_USAGE_SUMMARY),
+            Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS),
+            Intent(Settings.ACTION_SETTINGS)
+        ) else listOf(
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName")),
+            Intent(Settings.ACTION_SETTINGS)
+        )
+        leaveLock()
+        Kiosk.relaxOwnerPolicies(this)
+        var ok = false
+        for (i in tries) {
+            try {
+                startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                ok = true
+                break
+            } catch (_: Exception) {}
+        }
+        if (!ok) {
+            Kiosk.applyOwnerPolicies(this)
+            enterLock()
+            toast("Не получилось открыть настройки")
+            return
+        }
+        toast(if (what == "battery") "Батарея → «Защита батареи» → «Защита аккумулятора». Через 3 минуты вернётся экран стола"
+              else "Контроль активности → «Нет ограничений». Через 3 минуты вернётся экран стола")
+        ui.removeCallbacks(visitBack)
+        ui.postDelayed(visitBack, 180_000L)
     }
 
     private fun pause() {
@@ -475,6 +523,7 @@ class MainActivity : Activity() {
     private val updCheck = object : Runnable {
         override fun run() {
             ui.postDelayed(this, 6 * 3600_000L)
+            if (prefs.setupAuto && !prefs.paused) Kiosk.applySetup(this@MainActivity)
             if (!prefs.autoUpdate || !Kiosk.isOwner(this@MainActivity)) return
             if (Updater.ready(this@MainActivity)) installIfCalm()
             else Updater.check(this@MainActivity) { v, _ -> if (v > 0) ui.post { installIfCalm() } }
@@ -528,6 +577,7 @@ class MainActivity : Activity() {
             .put("disk", freeDiskMb())
             .put("upd", prefs.updVer)
             .put("updnote", prefs.updNote)
+            .put("set", Kiosk.settingsReport(this@MainActivity))
             .toString()
 
         /** Пульс страницы: пока он приходит, экран стола живой. */
@@ -577,6 +627,22 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun update() {
             Updater.check(this@MainActivity) { v, _ -> if (v > 0) ui.post { installIfCalm() } }
+        }
+
+        /** ⚙️ 1.0.7: «Настроить планшет» из админки. Возвращает, что поменяли. */
+        @JavascriptInterface
+        fun setup(): String = Kiosk.applySetup(this@MainActivity)
+
+        /** 🔋 Открыть экран батареи (там «Защита батареи 80 %») — сотрудник рядом с планшетом. */
+        @JavascriptInterface
+        fun openBattery() {
+            runOnUiThread { visitSettings("battery") }
+        }
+
+        /** Открыть настройки Enjoy Kiosk (на Xiaomi там «Контроль активности» → «Нет ограничений»). */
+        @JavascriptInterface
+        fun openAppSettings() {
+            runOnUiThread { visitSettings("app") }
         }
 
         @JavascriptInterface

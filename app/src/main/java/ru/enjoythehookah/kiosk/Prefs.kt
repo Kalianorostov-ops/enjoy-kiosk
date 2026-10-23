@@ -45,6 +45,19 @@ class Prefs(ctx: Context) {
         get() = sp.getString("updnote", "") ?: ""
         set(v) = sp.edit().putString("updnote", v).apply()
 
+    /** ⚙️ 1.0.7: держать системные настройки в порядке (включается командой «Настроить» из админки). */
+    var setupAuto: Boolean
+        get() = sp.getBoolean("setupauto", false)
+        set(v) = sp.edit().putBoolean("setupauto", v).apply()
+
+    var setupAt: Long
+        get() = sp.getLong("setupat", 0L)
+        set(v) = sp.edit().putLong("setupat", v).apply()
+
+    var setupNote: String
+        get() = sp.getString("setupnote", "") ?: ""
+        set(v) = sp.edit().putString("setupnote", v).apply()
+
     companion object {
         const val HOST = "enjoythehookah.ru"
 
