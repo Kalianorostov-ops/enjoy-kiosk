@@ -311,7 +311,12 @@ class MainActivity : Activity() {
      */
     private fun visitSettings(what: String) {
         if (prefs.lost) return
-        val tries = if (what == "battery") listOf(
+        // 🔋 1.0.10: если Android ограничивает программу по батарее — сначала системное окно «Разрешить работать в фоне?»
+        val boNeed = what == "battery" && try { !(getSystemService(Context.POWER_SERVICE) as android.os.PowerManager).isIgnoringBatteryOptimizations(packageName) } catch (_: Exception) { false }
+        val tries = if (what == "battery") (if (boNeed) listOf(
+            Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, android.net.Uri.parse("package:$packageName")),
+            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+        ) else emptyList()) + listOf(
             Intent(Intent.ACTION_POWER_USAGE_SUMMARY),
             Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS),
             Intent(Settings.ACTION_SETTINGS)
