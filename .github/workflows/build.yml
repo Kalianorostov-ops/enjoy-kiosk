@@ -2,7 +2,7 @@ name: Сборка Enjoy Kiosk
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, '*-1.0.*' ]   # ветки правок — только проверочная сборка, выпуск — только из main
   workflow_dispatch:
 
 permissions:
@@ -49,6 +49,7 @@ jobs:
             apk-sha256.txt
 
       - name: Выпуск (ссылка для скачивания на планшет)
+        if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}

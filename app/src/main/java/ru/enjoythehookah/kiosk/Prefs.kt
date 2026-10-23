@@ -68,6 +68,11 @@ class Prefs(ctx: Context) {
         get() = sp.getString("lostmsg", "") ?: ""
         set(v) = sp.edit().putString("lostmsg", v).apply()
 
+    /** 📶 1.0.11: итог последней настройки Wi-Fi из админки */
+    var wifiRes: String
+        get() = sp.getString("wifires", "") ?: ""
+        set(v) = sp.edit().putString("wifires", v).apply()
+
     /** Последнее известное место: {"lat","lon","acc","at","p"} */
     var lastLoc: String
         get() = sp.getString("lastloc", "") ?: ""

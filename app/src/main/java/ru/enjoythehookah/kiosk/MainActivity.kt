@@ -723,6 +723,8 @@ class MainActivity : Activity() {
             .put("set", Kiosk.settingsReport(this@MainActivity))
             .put("lost", prefs.lost)
             .put("frp", Kiosk.frpState(this@MainActivity))
+            .put("ssid", Kiosk.wifiSsid(this@MainActivity))
+            .put("wfres", prefs.wifiRes)
             .toString()
 
         /** Пульс страницы: пока он приходит, экран стола живой. */
@@ -818,6 +820,49 @@ class MainActivity : Activity() {
         @JavascriptInterface
         fun reload() {
             runOnUiThread { web?.reload() }
+        }
+
+        /** 👁 1.0.11: снимок экрана стола для админки — ответ придёт в window.ethShotDone(base64 JPEG). */
+        @JavascriptInterface
+        fun shot() {
+            runOnUiThread { takeShot() }
+        }
+
+        /** 📶 1.0.11: Wi-Fi сети из админки: [{"s":"имя","p":"пароль"}]. Возвращает итог «имя ✓/✗». */
+        @JavascriptInterface
+        fun setWifi(json: String): String = Kiosk.setWifi(this@MainActivity, json)
+    }
+
+    // ---------- 👁 1.0.11: снимок экрана для админки ----------
+
+    private fun takeShot() {
+        val v = window.decorView
+        val w = v.width
+        val h = v.height
+        if (w <= 0 || h <= 0) return
+        val bmp = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+        try {
+            android.view.PixelCopy.request(window, bmp, { res ->
+                if (res == android.view.PixelCopy.SUCCESS) Thread { sendShot(bmp) }.start() else bmp.recycle()
+            }, ui)
+        } catch (_: Throwable) {
+            bmp.recycle()
+        }
+    }
+
+    private fun sendShot(bmp: android.graphics.Bitmap) {
+        try {
+            val tw = minOf(720, bmp.width)
+            val th = maxOf(1, (bmp.height.toLong() * tw / bmp.width).toInt())
+            val sc = android.graphics.Bitmap.createScaledBitmap(bmp, tw, th, true)
+            val out = java.io.ByteArrayOutputStream()
+            sc.compress(android.graphics.Bitmap.CompressFormat.JPEG, 55, out)
+            if (sc !== bmp) sc.recycle()
+            val b64 = android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
+            ui.post { web?.evaluateJavascript("window.ethShotDone&&window.ethShotDone('" + b64 + "')", null) }
+        } catch (_: Throwable) {
+        } finally {
+            bmp.recycle()
         }
     }
 

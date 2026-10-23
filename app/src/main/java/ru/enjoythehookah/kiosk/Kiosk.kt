@@ -19,6 +19,51 @@ object Kiosk {
 
     fun isOwner(ctx: Context): Boolean = dpm(ctx).isDeviceOwnerApp(ctx.packageName)
 
+    /**
+     * 📶 1.0.11: Wi-Fi сети из админки: [{"s":"имя сети","p":"пароль"}]. Программа — владелец устройства,
+     * поэтому Android разрешает ей добавлять и менять сети. Пароль никуда не выводится; итог — «имя ✓/✗».
+     */
+    @Suppress("DEPRECATION")
+    fun setWifi(ctx: Context, json: String): String {
+        val p = Prefs(ctx)
+        if (!isOwner(ctx)) return "нет прав владельца устройства".also { p.wifiRes = it }
+        val wm = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+        val arr = try { org.json.JSONArray(json) } catch (_: Exception) { return "ошибка данных".also { p.wifiRes = it } }
+        grantLocation(ctx, false)
+        try { if (!wm.isWifiEnabled) wm.isWifiEnabled = true } catch (_: Throwable) {}
+        val known: List<android.net.wifi.WifiConfiguration> = try { wm.configuredNetworks ?: emptyList() } catch (_: Throwable) { emptyList() }
+        val res = mutableListOf<String>()
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val ssid = o.optString("s").trim()
+            val pass = o.optString("p")
+            if (ssid.isEmpty()) continue
+            val q = "\"" + ssid + "\""
+            val c = android.net.wifi.WifiConfiguration()
+            c.SSID = q
+            if (pass.isEmpty()) c.allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE)
+            else c.preSharedKey = "\"" + pass + "\""
+            val old = known.firstOrNull { it.SSID == q }
+            var id = -1
+            try {
+                if (old != null) { c.networkId = old.networkId; id = wm.updateNetwork(c) }
+                if (id < 0) id = wm.addNetwork(c)
+            } catch (e: Throwable) { Log.w("EnjoyKiosk", "wifi: " + e.message) }
+            if (id >= 0) { try { wm.enableNetwork(id, false) } catch (_: Throwable) {}; res.add("$ssid ✓") } else res.add("$ssid ✗")
+        }
+        val r = res.joinToString(", ").ifEmpty { "нет сетей" }
+        p.wifiRes = r
+        return r
+    }
+
+    /** Имя сети, к которой планшет подключён сейчас (пусто — неизвестно). */
+    @Suppress("DEPRECATION")
+    fun wifiSsid(ctx: Context): String = try {
+        val wm = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+        val s = wm.connectionInfo?.ssid ?: ""
+        if (s.isEmpty() || s.contains("unknown ssid")) "" else s.trim('"')
+    } catch (_: Throwable) { "" }
+
     /** Включён ли сейчас режим закрепления (киоск или обычное закрепление экрана). */
     fun isLocked(ctx: Context): Boolean {
         val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
