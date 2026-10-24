@@ -81,6 +81,10 @@ class MainActivity : Activity() {
         render()
         ui.postDelayed(watchdog, 60_000)
         ui.postDelayed(updCheck, 120_000)
+        // 🔐 1.0.23: защита от сброса — пробуем привязать несколько раз (аккаунт может стать доступен не сразу после старта)
+        ui.postDelayed({ maybeAutoFrp() }, 15_000)
+        ui.postDelayed({ maybeAutoFrp() }, 60_000)
+        ui.postDelayed({ maybeAutoFrp() }, 180_000)
         if (lostOn()) ui.post(locLoop)
         ui.postDelayed(awayLoop, 30_000)
     }
@@ -825,6 +829,7 @@ class MainActivity : Activity() {
             .put("lostAuto", prefs.lostAuto)
             .put("home", prefs.homeSet().size)
             .put("frp", Kiosk.frpState(this@MainActivity))
+            .put("google", Kiosk.googleAccounts(this@MainActivity).joinToString(", "))
             .put("ssid", Kiosk.wifiSsid(this@MainActivity))
             .put("wfres", prefs.wifiRes)
             .toString()
