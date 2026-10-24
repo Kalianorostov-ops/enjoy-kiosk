@@ -96,6 +96,8 @@ class MainActivity : Activity() {
     private var resumedNow = false
     private var shotRes = "не делали"
     @Volatile private var lastShot = ""
+    @Volatile private var frpRes = "не делали"
+    private var frpTried = false
 
     override fun onPause() {
         resumedNow = false
@@ -111,6 +113,7 @@ class MainActivity : Activity() {
             Kiosk.applyOwnerPolicies(this)
             if (prefs.setupAuto && System.currentTimeMillis() - prefs.setupAt > 3600_000L) Kiosk.applySetup(this)
             enterLock()
+            maybeAutoFrp()
         }
     }
 
@@ -770,6 +773,14 @@ class MainActivity : Activity() {
         else ui.postDelayed({ installIfCalm() }, 5 * 60_000L)
     }
 
+    /** 🔐 1.0.22: один раз за запуск — если есть Google-аккаунт, привязать к нему защиту от сброса (в фоне). */
+    private fun maybeAutoFrp() {
+        if (frpTried || !Kiosk.isOwner(this)) return
+        if (Kiosk.googleAccounts(this).isEmpty()) return
+        frpTried = true
+        Thread { frpRes = try { Kiosk.autoFrp(this) } catch (e: Throwable) { "ошибка: " + e.javaClass.simpleName } }.start()
+    }
+
     /** Связь страницы с планшетом: window.EnjoyKiosk в JavaScript. */
     inner class Bridge {
         /** Яркость экрана 0.02–1, или -1 — как в настройках планшета. */
@@ -913,6 +924,13 @@ class MainActivity : Activity() {
             runOnUiThread { web?.reload() }
         }
 
+        /** 🔐 1.0.22: привязать защиту от сброса к Google-аккаунту сейчас (из админки). Результат — в следующем отчёте. */
+        @JavascriptInterface
+        fun frpAuto() {
+            frpTried = true
+            Thread { frpRes = try { Kiosk.autoFrp(this@MainActivity) } catch (e: Throwable) { "ошибка: " + e.javaClass.simpleName } }.start()
+        }
+
         /** 👁 1.0.21: последний снимок экрана (base64 JPEG) — страница забирает и отправляет в админку. */
         @JavascriptInterface
         fun shotData(): String = lastShot
@@ -1010,6 +1028,9 @@ class MainActivity : Activity() {
         put("decor") { window.decorView.let { it.width.toString() + "×" + it.height + " виден=" + it.isShown + " альфа=" + it.alpha } }
         put("winFlags") { Integer.toHexString(window.attributes.flags) }
         put("shot") { shotRes }
+        put("google") { Kiosk.googleAccounts(this@MainActivity).joinToString(", ") }
+        put("frpState") { Kiosk.frpState(this@MainActivity) }
+        put("frpRes") { frpRes }
         // 🔎 1.0.19: строки текста на картинке «Пропал» и маленький снимок того, что программа держит в окне
         put("coverText") {
             val c = lostCover as? android.view.ViewGroup

@@ -108,6 +108,8 @@ object Kiosk {
         restrictions.forEach { r -> safe { d.addUserRestriction(a, r) } }
         // 🚨 1.0.15: геолокация включена всегда — без неё Android не скажет имя Wi-Fi сети (нужно для «Пропал» без интернета)
         grantLocation(ctx, true)
+        // 🔐 1.0.22: доступ к списку аккаунтов (для защиты от сброса по Google-аккаунту)
+        safe { d.setPermissionGrantState(a, ctx.packageName, android.Manifest.permission.GET_ACCOUNTS, DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED) }
         // 🚨 1.0.15: кому принадлежит планшет — записано в сам Android (экран блокировки, «Об устройстве»), работает без интернета
         if (Build.VERSION.SDK_INT >= 24) {
             safe { d.setDeviceOwnerLockScreenInfo(a, OWNER_INFO) }
@@ -218,6 +220,40 @@ object Kiosk {
             d.setPermissionGrantState(a, ctx.packageName, perm, DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED)
         }
         if (on && Build.VERSION.SDK_INT >= 30) safe { d.setLocationEnabled(a, true) }
+    }
+
+    /** 🔐 1.0.22: Google-аккаунты, которые уже на планшете. */
+    fun googleAccounts(ctx: Context): List<String> = try {
+        android.accounts.AccountManager.get(ctx).getAccountsByType("com.google").map { it.name }
+    } catch (_: Throwable) { emptyList() }
+
+    /**
+     * 🔐 1.0.22: привязать защиту от сброса к Google-аккаунтам, которые уже вошли на планшете.
+     * Gaia ID аккаунта берём через GoogleAuthUtil — владельцу не нужно искать числовой код.
+     * ВАЖНО: getAccountId — блокирующий сетевой вызов, только из фонового потока.
+     */
+    fun autoFrp(ctx: Context): String {
+        if (!isOwner(ctx) || Build.VERSION.SDK_INT < 30) return "не поддерживается на этом Android"
+        val accs = googleAccounts(ctx)
+        if (accs.isEmpty()) return "нет Google-аккаунта на планшете"
+        val ids = mutableListOf<String>()
+        val bad = mutableListOf<String>()
+        for (name in accs) {
+            try {
+                val id = com.google.android.gms.auth.GoogleAuthUtil.getAccountId(ctx, name)
+                if (!id.isNullOrBlank()) ids.add(id) else bad.add(name + ": пустой ID")
+            } catch (e: Throwable) { bad.add(name + ": " + (e.message ?: e.javaClass.simpleName)) }
+        }
+        if (ids.isEmpty()) return "ID не получен (" + bad.joinToString("; ") + ")"
+        return try {
+            dpm(ctx).setFactoryResetProtectionPolicy(admin(ctx),
+                android.app.admin.FactoryResetProtectionPolicy.Builder()
+                    .setFactoryResetProtectionAccounts(ids)
+                    .setFactoryResetProtectionEnabled(true)
+                    .build())
+            Prefs(ctx).frpId = ids.joinToString(",")
+            "включена для: " + accs.joinToString(", ") + (if (bad.isEmpty()) "" else " (пропущено: " + bad.joinToString("; ") + ")")
+        } catch (e: Throwable) { "ошибка применения: " + (e.message ?: e.javaClass.simpleName) }
     }
 
     /**

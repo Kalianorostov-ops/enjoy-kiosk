@@ -58,4 +58,6 @@ android {
 dependencies {
     // сканер QR-кода из сервисов Google — без разрешения на камеру
     implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    // 🔐 1.0.22: получить Gaia ID Google-аккаунта для защиты от сброса (GoogleAuthUtil)
+    implementation("com.google.android.gms:play-services-auth:21.2.0")
 }
