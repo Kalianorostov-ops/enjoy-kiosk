@@ -1004,6 +1004,30 @@ class MainActivity : Activity() {
         put("decor") { window.decorView.let { it.width.toString() + "×" + it.height + " виден=" + it.isShown + " альфа=" + it.alpha } }
         put("winFlags") { Integer.toHexString(window.attributes.flags) }
         put("shot") { shotRes }
+        // 🔎 1.0.19: строки текста на картинке «Пропал» и маленький снимок того, что программа держит в окне
+        put("coverText") {
+            val c = lostCover as? android.view.ViewGroup
+            val col = c?.getChildAt(0) as? android.view.ViewGroup
+            if (col == null) "нет" else (0 until col.childCount).joinToString(" | ") { i ->
+                val v = col.getChildAt(i)
+                val t = (v as? TextView)?.text?.toString()?.take(12) ?: v.javaClass.simpleName
+                t + " " + v.width + "×" + v.height + "@" + v.left + "," + v.top + (if (v.isShown) "" else " скрыт") +
+                    ((v as? TextView)?.let { " цвет=" + Integer.toHexString(it.currentTextColor) + " " + it.textSize.toInt() + "px" } ?: "")
+            } + " | колонка " + col.width + "×" + col.height
+        }
+        put("thumb") {
+            val w = root.width; val h = root.height
+            if (w <= 0 || h <= 0) null else {
+                val big = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+                root.draw(android.graphics.Canvas(big))
+                val sm = android.graphics.Bitmap.createScaledBitmap(big, 160, maxOf(1, 160 * h / w), true)
+                big.recycle()
+                val out = java.io.ByteArrayOutputStream()
+                sm.compress(android.graphics.Bitmap.CompressFormat.JPEG, 60, out)
+                sm.recycle()
+                android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
+            }
+        }
         put("paused") { prefs.paused }
         put("owner") { Kiosk.isOwner(this) }
         return o.toString()
