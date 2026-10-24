@@ -474,8 +474,9 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
             setPadding(dp(48), dp(32), dp(48), dp(32))
         }
+        // 🚨 1.0.20: setText — раньше «text = t» попадало в переменную text выше, и все строки экрана «Пропал» были пустыми
         fun tv(t: String, size: Float, color: Int, bold: Boolean) = TextView(this).apply {
-            text = t
+            setText(t)
             setTextColor(color)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
             gravity = Gravity.CENTER
